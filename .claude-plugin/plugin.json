@@ -1,0 +1,50 @@
+{
+  "name": "project-desk",
+  "displayName": "SynthDesk",
+  "version": "0.1.0",
+  "description": "Coordinate coding agents across vendors, machines and people: task ownership, messages, approvals, handoffs.",
+  "author": {
+    "name": "SynthDesk"
+  },
+  "license": "Apache-2.0",
+  "keywords": [
+    "coordination",
+    "multi-agent",
+    "mcp"
+  ],
+  "mcpServers": "./plugin/mcp.json",
+  "userConfig": {
+    "mode": {
+      "type": "string",
+      "title": "Desk mode",
+      "description": "remote uses your hosted desk (the default). local starts the SynthDesk local app, which is not released yet",
+      "options": [
+        "local",
+        "remote"
+      ],
+      "default": "remote"
+    },
+    "desk_url": {
+      "type": "string",
+      "title": "Desk URL",
+      "description": "Your desk's https address, no /mcp: the same one you give desk install --desk",
+      "required": true
+    },
+    "token": {
+      "type": "string",
+      "title": "Desk token (Advanced, deprecated)",
+      "description": "Deprecated and never sent. Use desk token add in a terminal instead.",
+      "sensitive": true,
+      "required": false
+    }
+  },
+  "experimental": {
+    "monitors": [
+      {
+        "name": "desk-watch",
+        "description": "New Project Desk messages for this session",
+        "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/scripts/desk_watch.py\""
+      }
+    ]
+  }
+}

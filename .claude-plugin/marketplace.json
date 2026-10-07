@@ -1,0 +1,30 @@
+{
+  "name": "synthdesk",
+  "owner": {
+    "name": "SynthDesk"
+  },
+  "metadata": {
+    "description": "Coordinate coding agents across vendors, machines and people: task ownership, messages, approvals, handoffs.",
+    "version": "0.1.0"
+  },
+  "plugins": [
+    {
+      "name": "project-desk",
+      "source": "./",
+      "description": "Coordinate coding agents across vendors, machines and people: task ownership, messages, approvals, handoffs.",
+      "version": "0.1.0",
+      "author": {
+        "name": "SynthDesk"
+      },
+      "license": "Apache-2.0",
+      "homepage": "https://github.com/rohanzaki/synthdesk",
+      "repository": "https://github.com/rohanzaki/synthdesk",
+      "keywords": [
+        "coordination",
+        "multi-agent",
+        "mcp"
+      ],
+      "category": "productivity"
+    }
+  ]
+}

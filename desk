@@ -1,0 +1,8 @@
+#!/usr/bin/env bash
+set -euo pipefail
+DESK_FILE="$(readlink -f -- "${BASH_SOURCE[0]}")"
+DESK_DIR="$(dirname -- "$DESK_FILE")"
+if [[ -x "$DESK_DIR/.venv/bin/python" ]]; then
+    exec "$DESK_DIR/.venv/bin/python" "$DESK_DIR/client.py" "$@"
+fi
+exec python3 "$DESK_DIR/client.py" "$@"
