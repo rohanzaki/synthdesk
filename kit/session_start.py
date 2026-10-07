@@ -82,7 +82,7 @@ def call(tool, args):
     body = json.dumps({"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {"name": tool, "arguments": args}})
     req = u.Request(url + "/mcp", body.encode(), {"Content-Type": "application/json", "Authorization": "Bearer " + tok,
                                                   "Accept": "application/json, text/event-stream",
-                                                  "User-Agent": "project-desk/0.1.0 (kit)"})
+                                                  "User-Agent": "project-desk/0.2.0 (kit)"})
     res = json.load(opener.open(req, timeout=left))["result"]
     if res.get("isError"):
         raise Refused("desk error")

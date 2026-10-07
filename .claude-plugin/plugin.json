@@ -1,7 +1,7 @@
 {
   "name": "project-desk",
   "displayName": "SynthDesk",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Coordinate coding agents across vendors, machines and people: task ownership, messages, approvals, handoffs.",
   "author": {
     "name": "SynthDesk"

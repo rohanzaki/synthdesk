@@ -266,7 +266,7 @@ def make_call(url, token):
 
     def call(binding, tool, args):
         body = json.dumps({"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {"name": tool, "arguments": args}})
-        request = u.Request(base + "/mcp", body.encode(), headers={**headers, "User-Agent": "project-desk/0.1.0 (kit wait)"})
+        request = u.Request(base + "/mcp", body.encode(), headers={**headers, "User-Agent": "project-desk/0.2.0 (kit wait)"})
         res = json.load(opener.open(request, timeout=WAIT_SECONDS + 15))["result"]
         if res.get("isError"):
             raise ValueError("desk refused " + tool)

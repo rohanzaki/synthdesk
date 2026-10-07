@@ -1969,6 +1969,15 @@ def _warn_expiry(home, environ, out, clock):
         return
 
 
+_CLONE_URL = 'https://github.com/rohanzaki/synthdesk.git'
+
+
+def _clone_step():
+    if '{{' in _CLONE_URL:
+        return 'clone the public SynthDesk repository from the client guide'
+    return f'git clone {_CLONE_URL}'
+
+
 def _hook(args, home, environ, transport, out, clock=time.time):
     if len(args) != 1:
         return 2
@@ -2005,10 +2014,15 @@ def _hook(args, home, environ, transport, out, clock=time.time):
                     lines.append('Project Desk: not joined in this session: ask your user for an invite.')
             elif _read(home, CONFIG, 'home.json') is None:
                 lines.append('SynthDesk: this computer is not set up yet. Claude Code: after /plugin install '
-                              'project-desk@synthdesk, run ~/.claude/plugins/marketplaces/synthdesk/desk install '
-                              '--desk <origin>. Codex or a shell: clone the public SynthDesk repository from the client guide, '
+                              'project-desk@synthdesk, run "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/plugins/marketplaces/synthdesk/desk" install '
+                              f'--desk <origin>. Codex or a shell: {_clone_step()}, '
                               'cd synthdesk, then ./desk install --desk <origin>. Use the address on the signed-in '
-                              'desk page.')
+                              'desk page. Run setup yourself in the interactive terminal where the agent runs (on the server '
+                              'when using VS Code Remote-SSH or tmux). If this Claude Code account uses CLAUDE_CONFIG_DIR, '
+                              'set it in this terminal first; otherwise the command uses ~/.claude. The command works in '
+                              'bash, zsh and other POSIX shells. In fish, use ~/.claude/plugins/marketplaces/synthdesk/desk '
+                              'for the default account, or "$CLAUDE_CONFIG_DIR/plugins/marketplaces/synthdesk/desk" '
+                              'for a configured account, with the same install --desk arguments.')
             else:
                 origin = _pin(home, environ)
                 project = _active_project(home, origin)

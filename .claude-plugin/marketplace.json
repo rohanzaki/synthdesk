@@ -5,14 +5,14 @@
   },
   "metadata": {
     "description": "Coordinate coding agents across vendors, machines and people: task ownership, messages, approvals, handoffs.",
-    "version": "0.1.0"
+    "version": "0.2.0"
   },
   "plugins": [
     {
       "name": "project-desk",
       "source": "./",
       "description": "Coordinate coding agents across vendors, machines and people: task ownership, messages, approvals, handoffs.",
-      "version": "0.1.0",
+      "version": "0.2.0",
       "author": {
         "name": "SynthDesk"
       },

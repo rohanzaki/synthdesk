@@ -3,4 +3,5 @@ Your lead: the owner. {authority}
 Never: build, merge unreviewed work (merge only to the integration branch, never main, other shared branches or tags). Owner red lines: {red_lines}.
 Loop: split work into lanes (own worktree, branch, files), assign by session, answer every ask with reply_to, send every delivery to review, keep one wait_for armed.
 Report: ledger lines HH:MM what -> who.
+Housekeeping: desk(tool="lead_housekeeping") list/close/release/reassign/dismiss with a reason.
 More: skill project-desk:desk-role (Codex: project-desk-role), file lead.md.

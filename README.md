@@ -3,7 +3,7 @@
 SynthDesk is a coordination desk for coding agents: task claims, messages, approvals and handoffs
 across Claude Code, Codex and people. This repository is the Claude Code plugin and the `desk`
 command line client. The desk itself is the hosted SynthDesk service; use the hosted desk. A local
-app that runs a desk on your own machine is planned and is not released yet. Version 0.1.0.
+app that runs a desk on your own machine is planned and is not released yet. Version 0.2.0.
 
 ## Install in Claude Code
 
@@ -30,13 +30,15 @@ https address). Desk mode stays on `remote`, the default. A later release replac
 ## Set up a computer
 
 1. Install the plugin (above). Then, once per computer, pin your desk's address with the plugin's own
-   `desk` script. `desk` is not on your PATH yet, so give its full path:
+   `desk` script in the terminal where the agent runs (on the server when using VS Code Remote-SSH or
+   tmux). `desk` is not on your PATH yet, so give its full path in bash, zsh or another POSIX shell:
 
-       ~/.claude/plugins/marketplaces/synthdesk/desk install --desk https://<your desk>
+       "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/plugins/marketplaces/synthdesk/desk" install --desk https://<your desk>
 
    It asks you to type `yes`, pins the address, and links `desk` into `~/.local/bin` (add that folder
-   to your PATH if it is not there). If you keep Claude Code's files somewhere else (`CLAUDE_CONFIG_DIR`),
-   use that folder instead of `~/.claude`. Running it again after a plugin update is safe: it moves
+   to your PATH if it is not there). If this Claude Code account uses `CLAUDE_CONFIG_DIR`, set it in this terminal first; otherwise the command uses `~/.claude`.
+   In fish, use `~/.claude/plugins/marketplaces/synthdesk/desk` for the default account, or `"$CLAUDE_CONFIG_DIR/plugins/marketplaces/synthdesk/desk"` for a configured account, with the same `install --desk` arguments.
+   Running it again after a plugin update is safe: it moves
    its own link to the plugin's current folder. If it says the `desk` path already belongs to another
    file, that link is not the plugin's: remove `~/.local/bin/desk` yourself and run it again.
 2. Join a project with the invite from your desk's page: paste the invite line into a Claude Code

@@ -344,11 +344,14 @@ def claude_config_problem(path):
 
 
 def _claude_config(path):
-    """Read a bounded Claude MCP config; an absent, oversized or invalid config proves no origin (fails closed)."""
+    """Read a bounded Claude MCP config; an absent, oversized, invalid or non-regular config proves no origin (fails
+    closed). Never reads a device or pipe (a checked-in `.mcp.json -> /dev/zero`), and never more than the cap plus one byte."""
     try:
-        if claude_config_problem(path):
+        if claude_config_problem(path) or not stat.S_ISREG(os.stat(path).st_mode):
             return None
-        config = json.loads(path.read_text())
+        with open(path, 'rb') as handle:
+            data = handle.read(CLAUDE_CONFIG_MAX_BYTES + 1)
+        config = json.loads(data) if len(data) <= CLAUDE_CONFIG_MAX_BYTES else None
         return config if isinstance(config, dict) else None
     except (OSError, ValueError, TypeError):
         return None
@@ -456,48 +459,99 @@ def _proc_started_at(proc):
         return None
 
 
-def _snapshot_mcp_state(state, loaded_by=None, startup=True):
-    """Record the origin Claude could have loaded at SessionStart, before any model tool call.
+START_SLACK = 2.0
 
-    loaded_by: an agent process that started BEFORE this hook ran (a resume, not a startup). Claude read its config
-    when that process started, so an entry whose file was written after that is not what it loaded: it is skipped
-    (and the call is then denied as unknown). A user or local entry whose hash and path equal the earlier snapshot
-    is kept, because Claude rewrites ~/.claude.json constantly; a project or plugin file is always gated, since the
-    model could write the old bytes back.
 
-    startup: this is a SessionStart(startup). Only a startup, a process whose start time is verified (loaded_by), or a
-    re-snapshot that continues an earlier verified one can say what Claude loaded; anything else (a join adopted
-    mid-session, an unverifiable process) records NO snapshots, which disables key injection: prebound denies the call.
-    Never a fallback to unrestricted snapshotting."""
+def _my_uid():
+    return os.geteuid()
+
+
+def _config_problem(path, started=None):
+    """Why this config file cannot be taken as what the agent process loaded, or None. Read once, by the startup hook.
+    Symlinks are followed (dotfile managers link ~/.claude.json), one link at a time. The target must be a regular file
+    of this user, outside our private state folders; when the chain went through a link, the target must also not be
+    group- or world-writable. With `started` (project and plugin files; ~/.claude.json is rewritten constantly, so it is
+    never dated), the newest lstat mtime or ctime over EVERY link in the chain and the target must not be later than the
+    process start (plus START_SLACK): a link made or retargeted after launch, or a file written after it, is refused."""
+    try:
+        newest, linked, here = 0.0, False, str(path)
+        for _ in range(32):
+            info = os.lstat(here)
+            newest = max(newest, info.st_mtime, info.st_ctime)
+            if not stat.S_ISLNK(info.st_mode):
+                break
+            linked, here = True, os.path.join(os.path.dirname(here), os.readlink(here))
+        else:
+            return 'too many symbolic links'
+        if not stat.S_ISREG(info.st_mode) or info.st_uid != _my_uid():
+            return 'not a regular file of this user'
+        if (linked and info.st_mode & 0o022) or info.st_mode & 0o002:
+            return 'writable by others'
+        if _PRIVATE_DESK_PATH.search(os.path.realpath(path)):
+            return 'inside the private desk state'
+        if started is not None and newest > started + START_SLACK:
+            return 'written after the agent process started'
+    except OSError:
+        return 'unreadable'
+    return None
+
+
+NEW_SESSION_LINE = ('SynthDesk can only attach its key to a session it joined at startup, so desk calls are refused here. '
+                    'Start a new session; the SynthDesk plugin connects at startup.')
+
+
+def _snapshot_mcp_state(state):
+    """The startup snapshot for a Claude binding (see above): the origin each config entry names, and the verified
+    process it was taken for. With no verifiable process it stores no snapshot at all, so nothing is ever injected."""
     if state.get('agent') != 'claude':
         return state
-    if not startup and loaded_by is None and not state.get('mcp_snapshots'):
-        state['mcp_snapshots'] = {}
-        state.pop('snapshot_proc', None)
-        return state
     snapshots = {}
+    proc = agent_process(strict=True)
     desk_name = os.environ.get('PROJECT_DESK_MCP_NAME') or 'project-desk'
     for source, name in (('plugin', 'plugin:project-desk:project-desk'),
                          ('project', desk_name), ('user', desk_name), ('local', desk_name)):
-        payload = {'mcp_server': {'source': source, 'name': name}}
-        origin, path, entry = _mcp_resolution(payload, state)
+        origin, path, entry = _mcp_resolution({'mcp_server': {'source': source, 'name': name}}, state)
         digest = _mcp_config_hash(path, entry)
-        prior = (state.get('mcp_snapshots') or {}).get(source + ':' + name)
-        if loaded_by is not None and (source in ('project', 'plugin') or not prior or prior.get('hash') != digest
-                                      or prior.get('path') != (str(path) if path else '')):
-            started = _proc_started_at(loaded_by)
-            try:
-                if started is None or (path and path.stat().st_mtime > started):
-                    continue
-            except OSError:
-                continue
-        if origin and digest:
-            snapshots[source + ':' + name] = {'origin': list(origin), 'path': str(path) if path else '',
-                                               'hash': digest}
+        if not (proc and origin and digest):
+            continue
+        dated = path is not None and source in ('project', 'plugin')
+        started = _proc_started_at(proc) if dated else None
+        if path is not None and ((dated and started is None) or _config_problem(path, started)):
+            continue
+        snapshots[source + ':' + name] = {'origin': list(origin), 'path': str(path) if path else '', 'hash': digest}
     state['mcp_snapshots'] = snapshots
-    if proc := agent_process(strict=True):
+    if proc:
         state['snapshot_proc'] = proc
+    else:
+        state.pop('snapshot_proc', None)
     return state
+
+
+def _resume_takes_snapshot(state, payload):
+    """A SessionStart(resume) is the start of a NEW process for a conversation that is already bound: that process takes
+    its own snapshot (dated against its own start) and the old one loses the key. It qualifies only when: the source is
+    exactly `resume`; the process can be verified now (pid, start tick, boot id; an unverifiable resume must not wipe a
+    good snapshot); it is not the recorded process and has not run a SessionStart, prompt or edit hook for this binding
+    before (those stamp it in agent_proc / agent_procs; a desk-tool PreToolUse does not, so this check is weaker than
+    it reads; the start-after-bound_at check below is what shuts the binder out; a repeated or forged event in a
+    running process changes nothing); it started AFTER the binding was made (a process that was already
+    running, such as the one that bound mid-session, is refused whatever it sends); and the binding is for the folder
+    the payload names (both absolute, same realpath; a binding with no cwd is refused).
+    A fork is a new conversation with no binding of its own and never gets here."""
+    if payload.get('source') != 'resume':
+        return False
+    proc = agent_process(strict=True)
+    if not proc or proc == state.get('snapshot_proc') or proc == state.get('agent_proc') \
+            or proc in (state.get('agent_procs') or []):
+        return False
+    started, bound = _proc_started_at(proc), state.get('bound_at')
+    if started is None or isinstance(bound, bool) or not isinstance(bound, (int, float)) or not started > bound:
+        return False
+    try:
+        return (os.path.isabs(state['cwd']) and os.path.isabs(str(payload.get('cwd')))
+                and os.path.realpath(payload['cwd']) == os.path.realpath(state['cwd']))
+    except (KeyError, TypeError, ValueError):
+        return False
 
 
 def _mcp_endpoint_matches(payload, state):
@@ -529,20 +583,22 @@ def prebound(payload, path):
         return None
     server = payload.get('mcp_server') or {}
     snapshot = state.get('mcp_snapshots', {}).get(str(server.get('source')) + ':' + str(server.get('name')))
+    proc = agent_process(strict=True)
     configured_origin, config_path, config_entry = _mcp_resolution(payload, state)
-    if snapshot and (snapshot.get('path') != (str(config_path) if config_path else '')
-                     or snapshot.get('hash') != _mcp_config_hash(config_path, config_entry)):
+    if not (snapshot and proc and proc == state.get('snapshot_proc')):
+        message = NEW_SESSION_LINE
+        if not snapshot and not configured_origin and (oversized := _oversized_claude_config(payload, state)):
+            message = f'Project Desk key not attached: server origin unknown ({oversized}; shrink or move it).'
+    elif (snapshot.get('path') != (str(config_path) if config_path else '')
+          or snapshot.get('hash') != _mcp_config_hash(config_path, config_entry)):
         source = server.get('source') if server.get('source') in ('plugin', 'project', 'user', 'local') else 'unknown'
         message = f'Project Desk key not attached: {source} MCP config changed after start; restart Claude Code.'
-        return {'hookSpecificOutput': {'hookEventName': 'PreToolUse', 'permissionDecision': 'deny',
-                'permissionDecisionReason': message, 'additionalContext': message}}
-    if (not snapshot or not configured_origin or list(configured_origin) != snapshot.get('origin')
-            or configured_origin != _origin(state.get('desk') or DEFAULT_DESK_URL)):
-        detail = ('server origin unknown' if not snapshot or not configured_origin
-                  else 'server origin differs from this session')
-        if not configured_origin and (oversized := _oversized_claude_config(payload, state)):
-            detail += f' ({oversized}; shrink or move it)'
-        message = f'Project Desk key not attached: {detail}. Do not call this Desk tool until its MCP URL matches the session desk.'
+    elif configured_origin != _origin(state.get('desk') or DEFAULT_DESK_URL):
+        message = ('Project Desk key not attached: server origin differs from this session. '
+                   'Do not call this Desk tool until its MCP URL matches the session desk.')
+    else:
+        message = None
+    if message:
         return {'hookSpecificOutput': {'hookEventName': 'PreToolUse', 'permissionDecision': 'deny',
                 'permissionDecisionReason': message, 'additionalContext': message}}
     given = payload.get('tool_input')
@@ -1418,14 +1474,39 @@ def deny_edit(blockers):
 
 _SHELL_BREAKS = frozenset(';&|()\n')
 _ENV_ASSIGNMENT = re.compile(r'[A-Za-z_][A-Za-z_0-9]*=')
-_REDIRECT_OPERATOR = re.compile(r'(?:[0-9]*|&)>{1,2}\|?')
+_REDIRECT_HEAD = re.compile(r'(?:[0-9]*|&)>{1,2}|<>')
+_REDIRECT_OPERATOR = re.compile(r'(?:[0-9]*|&)>{1,2}[|&]?|<>')
 _PRIVATE_DESK_PATH = re.compile(r'(?:^|/)\.local/state/project-desk/(?:credentials\.json|pocket(?:/|$)|claude(?:/|$))|(?:^|/)project-desk/broker(?:/|$)')
+
+
+def _detach_redirects(command):
+    """Put a space before an unquoted `>` glued to the end of a word (`echo x>path`), so the redirect is a word of its
+    own for shlex. Quote-aware: a `>` inside quotes or after a backslash is text and stays where it is."""
+    out, quote, boundary, index = [], '', True, 0
+    while index < len(command):
+        char = command[index]
+        if char == '\\' and quote != "'" and index + 1 < len(command):
+            out.append(char)
+            index += 1
+            char, boundary = command[index], False
+        elif quote:
+            quote = '' if char == quote else quote
+            boundary = False
+        elif char in '\'"':
+            quote, boundary = char, False
+        else:
+            if (char == '>' or (char == '<' and command[index + 1:index + 2] == '>')) and not boundary:
+                out.append(' ')
+            boundary = char.isspace() or char in ';&|()<>'
+        out.append(char)
+        index += 1
+    return ''.join(out)
 
 
 def _shell_commands(command, *, merge_clobber=False):
     """Split shell words at operators while retaining quoted arguments as words."""
     try:
-        lexer = shlex.shlex(command.replace('\\\n', ''), posix=True,
+        lexer = shlex.shlex(_detach_redirects(command.replace('\\\n', '')), posix=True,
                             punctuation_chars=';&|()\n')
         lexer.commenters = ''
         lexer.whitespace = ' \t\r'
@@ -1435,7 +1516,7 @@ def _shell_commands(command, *, merge_clobber=False):
         return None
     commands, current = [], []
     for word in words:
-        if merge_clobber and word == "|" and current and _REDIRECT_OPERATOR.fullmatch(current[-1]):
+        if merge_clobber and word in ('|', '&') and current and _REDIRECT_HEAD.fullmatch(current[-1]):
             current[-1] += word
             continue
         if word and all(char in _SHELL_BREAKS for char in word):
@@ -1536,7 +1617,7 @@ def _private_shell(command, depth=0):
         return True
     commands = _shell_commands(command)
     if commands is None:
-        return bool(re.search(r'\bdesk\s+header\b', command))
+        return True
     merged = _shell_commands(command, merge_clobber=True)
     return any(_private_shell_command(words, depth) for reading in (commands, merged) for words in reading)
 
@@ -1548,9 +1629,13 @@ def deny_private_shell(payload):
     command = (payload.get('tool_input') or {}).get('command')
     if not isinstance(command, str) or not _private_shell(command):
         return None
+    reason = ('Project Desk: use the headers helper for authentication; '
+              'do not print saved desk credentials in a shell.')
+    if _shell_commands(command) is None and not re.search(r'\bdesk\s+header\b', command):
+        reason = ('Project Desk: this command could not be parsed (an unbalanced quote, or a quote inside a heredoc or '
+                  'a comment), so it is refused. Rewrite it with balanced quotes, or put the text in a file.')
     return {'hookSpecificOutput': {'hookEventName': 'PreToolUse', 'permissionDecision': 'deny',
-            'permissionDecisionReason': 'Project Desk: use the headers helper for authentication; '
-                                        'do not print saved desk credentials in a shell.'}}
+            'permissionDecisionReason': reason}}
 
 
 QUIET_AFTER = 900
@@ -1858,11 +1943,8 @@ def _run_hook(payload, state_root=STATE_ROOT, call=call_desk, clock=time.time):
         if state.get('superseded_by'):
             return {}
         if event == 'SessionStart' and state.get('agent') == 'claude':
-            proc = agent_process(strict=True)
-            if (payload.get('source') == 'startup'
-                    or (proc and state.get('snapshot_proc') and proc != state['snapshot_proc'])):
-                _snapshot_mcp_state(state, None if payload.get('source') == 'startup' else proc,
-                                    startup=payload.get('source') == 'startup')
+            if payload.get('source') == 'startup' or _resume_takes_snapshot(state, payload):
+                _snapshot_mcp_state(state)
                 private_write(path, state)
         ended = state.get('ended_at')
         if isinstance(ended, (int, float)) and ended > started:
@@ -2011,12 +2093,12 @@ def bind_credentials(thread, credentials, project, state_root=STATE_ROOT, call=c
                 current.pop('ended_proc', None)
                 private_write(path, current)
             return path
-        private_write(path, _snapshot_mcp_state({'thread_id': thread, 'project': project, 'agent': agent, 'session_id': credentials['session_id'],
+        private_write(path, {'thread_id': thread, 'project': project, 'agent': agent, 'session_id': credentials['session_id'],
                              'session_key': credentials['session_key'],
                              'cursor': response.get('latest_cursor', 0), 'bound_at': time.time(),
                              'key_mode': key_mode(agent),
                              **({'cwd': str(cwd)} if cwd else {}),
-                             **({'callsign': registered['callsign']} if registered.get('callsign') else {})}))
+                             **({'callsign': registered['callsign']} if registered.get('callsign') else {})})
     return path
 
 
@@ -2205,14 +2287,16 @@ def adopt_pocket(payload, agent, path, joined, call):
                 mine = next(s for s in response['board']['sessions'] if s['id'] == joined['session_id'])
                 if response.get('session_id') != joined['session_id'] or response['board']['project'] != joined['project']:
                     return False
-                startup = payload.get('source') == 'startup'
-                private_write(path, _snapshot_mcp_state(
-                    {'thread_id': payload['session_id'], 'project': joined['project'], 'agent': agent,
-                     'session_id': joined['session_id'], 'session_key': joined['session_key'], 'desk': DEFAULT_DESK_URL,
-                     'cwd': str(payload.get('cwd') or os.getcwd()), 'cursor': response.get('latest_cursor', 0),
-                     'bound_at': time.time(), 'callsign': mine.get('callsign') or joined.get('callsign') or '',
-                     'agent_proc': agent_process(), 'fallback': False, 'key_mode': key_mode(agent), 'joined': True},
-                    loaded_by=None, startup=startup))
+                adopted = {'thread_id': payload['session_id'], 'project': joined['project'], 'agent': agent,
+                           'session_id': joined['session_id'], 'session_key': joined['session_key'], 'desk': DEFAULT_DESK_URL,
+                           'cwd': str(payload.get('cwd') or os.getcwd()), 'cursor': response.get('latest_cursor', 0),
+                           'bound_at': time.time(), 'callsign': mine.get('callsign') or joined.get('callsign') or '',
+                           'agent_proc': agent_process(), 'fallback': False, 'key_mode': key_mode(agent), 'joined': True}
+                if payload.get('source') == 'startup' or _resume_takes_snapshot(adopted, payload):
+                    _snapshot_mcp_state(adopted)
+                elif agent == 'claude':
+                    adopted['mcp_snapshots'] = {}
+                private_write(path, adopted)
             export_session_env(joined['session_id'])
         return True
     except Exception:
@@ -2239,6 +2323,8 @@ def auto_register(payload, agent, state_root=STATE_ROOT, call=call_desk):
             adopted = adopt_launcher(payload, agent, path, cwd, call)
             if adopted is not None:
                 return adopted
+            if agent == 'claude' and payload.get('source') != 'startup':
+                return output_for('SessionStart', NEW_SESSION_LINE, payload)
             branch = _git_branch(cwd)
             mode = key_mode(agent)
             name = compact(f'{agent} {os.path.basename(cwd.rstrip("/")) or "root"} {branch}'.strip(), 120)
@@ -2255,9 +2341,7 @@ def auto_register(payload, agent, state_root=STATE_ROOT, call=call_desk):
                                  'session_id': registered['session_id'], 'session_key': registered['session_key'],
                                  'desk': DEFAULT_DESK_URL, 'cwd': cwd, 'cursor': cursor, 'bound_at': time.time(),
                                  'callsign': registered.get('callsign', ''), 'agent_proc': agent_process(),
-                                 'fallback': bool(registered.get('fallback')), 'key_mode': mode},
-                                loaded_by=None if payload.get('source') == 'startup' else agent_process(strict=True),
-                startup=payload.get('source') == 'startup'))
+                                 'fallback': bool(registered.get('fallback')), 'key_mode': mode}))
         export_session_env(registered['session_id'])
         who = f"{registered['callsign']} ({registered['session_id']})" if registered.get('callsign') else registered['session_id']
         if mode == 'print':
